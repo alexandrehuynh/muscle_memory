@@ -22,6 +22,12 @@ pydantic>=2.10.4
 pydantic-settings>=2.7.1
 python-dotenv>=1.0.1
 
+# Testing Environment
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+httpx>=0.24.0  # For testing FastAPI endpoints
+pytest-cov>=4.1.0  # For coverage reports
+
 # AI Agent Integration (Future Phases)
 tensorflow>=2.18.0
 transformers>=4.48.0

@@ -1,0 +1,45 @@
+# Muscle Memory: Manual Testing Guide
+
+## Prerequisites
+- Test videos in `test_data/videos/`
+- Running Muscle Memory API server
+
+## Testing Movement Analysis API
+
+1. **Upload Video Test**
+   - Use Postman or curl to upload a video to `/api/v1/analyze`
+   - Command: `curl -X POST -F "video=@test_data/videos/squat_test.mp4" http://localhost:8000/api/v1/analyze`
+   - Verify the response contains analysis_id and exercise_type
+
+2. **Check Annotated Video**
+   - Upload with save_annotated_video=true
+   - Verify the output video exists and contains pose landmarks
+
+3. **Test Different Exercises**
+   - Upload videos of different exercises (squats, lunges, pushups)
+   - Verify correct exercise detection
+
+## Testing AI Feedback API
+
+1. **Generate Feedback Test**
+   - Use analysis results to request feedback
+   - Verify feedback contains appropriate recommendations
+
+2. **User Profile Adaptation**
+   - Test with different user profiles (beginner, intermediate, advanced)
+   - Verify feedback is adapted accordingly
+
+## Testing UI (When Implemented)
+
+1. **Video Upload Interface**
+   - Test drag-and-drop functionality
+   - Test file size limits
+   - Test supported format validation
+
+2. **Results Visualization**
+   - Verify joint angle charts are displayed correctly
+   - Verify feedback is presented clearly
+
+3. **User Experience**
+   - Test navigation between screens
+   - Verify loading indicators during processing
