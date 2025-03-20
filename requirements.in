@@ -1,0 +1,38 @@
+# Core Vision & Movement Analysis
+mediapipe>=0.10.21
+opencv-python>=4.10.0
+numpy>=1.26.4
+scipy>=1.14.1
+
+# Web API & Server
+fastapi>=0.115.6
+uvicorn>=0.34.0
+python-multipart>=0.0.20
+aiofiles>=24.1.0
+
+# Data Processing
+pandas>=2.2.3
+scikit-learn>=1.6.0
+
+# Visualization
+matplotlib>=3.10.0
+
+# Utilities
+pydantic>=2.10.4
+pydantic-settings>=2.7.1
+python-dotenv>=1.0.1
+
+# AI Agent Integration (Future Phases)
+tensorflow>=2.18.0
+transformers>=4.48.0
+torch>=2.5.1
+torchvision>=0.20.1
+huggingface-hub>=0.27.1
+
+# Advanced Movement Analysis (Future Phases)
+filterpy>=1.4.5
+scikit-image>=0.25.0
+
+# Business Intelligence (Future Phases)
+tensorboard>=2.18.0
+tensorflow-hub>=0.16.1
