@@ -3,10 +3,12 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
-
 from api.routers import movement, feedback
 from core.config import settings
 from utils.video.processor import VideoProcessor
+
+from utils.apple_silicon import enable_apple_silicon_optimizations
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

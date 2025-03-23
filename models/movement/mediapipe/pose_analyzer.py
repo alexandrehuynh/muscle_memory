@@ -19,7 +19,8 @@ class PoseAnalyzer:
     def __init__(self, model_complexity: int = 2, min_detection_confidence: float = 0.5, 
                  min_tracking_confidence: float = 0.7, enable_segmentation: bool = True,
                  smooth_landmarks: bool = True, smooth_segmentation: bool = True,
-                 process_every_n_frames: int = 2, use_tasks_api: bool = False):
+                 process_every_n_frames: int = 2, use_tasks_api: bool = False,
+                 analysis_type: str = None):
         """
         Initialize the PoseAnalyzer with MediaPipe configuration.
         
@@ -32,6 +33,7 @@ class PoseAnalyzer:
             smooth_segmentation: Whether to apply temporal filtering to segmentation mask
             process_every_n_frames: Process every N frames (skip frames for efficiency)
             use_tasks_api: Whether to use the newer MediaPipe Tasks API
+            analysis_type: Type of analysis to perform (affects segmentation needs)
         """
         # Initialize MediaPipe drawing and pose solutions
         self.mp_drawing = mp.solutions.drawing_utils
@@ -46,7 +48,9 @@ class PoseAnalyzer:
             'smooth_landmarks': smooth_landmarks,
             'smooth_segmentation': smooth_segmentation,
             'process_every_n_frames': process_every_n_frames,
-            'use_tasks_api': use_tasks_api
+            'use_tasks_api': use_tasks_api,
+            'analysis_type': analysis_type,
+            'confidence_threshold': 0.6  # Threshold for pose caching
         }
         
         # Flag for API type
@@ -62,7 +66,10 @@ class PoseAnalyzer:
         # Initialize pose detection model only for legacy API
         # For Tasks API, we'll initialize per usage mode
         if not use_tasks_api:
-            self.pose = self.configure_mediapipe()
+            self.pose = None  # Will be initialized when needed
+            
+        # For pose caching
+        self.previous_landmarks = None
     
     def _create_joint_mappings(self) -> Dict:
         """Create mappings for joint connections to calculate angles."""
@@ -81,20 +88,51 @@ class PoseAnalyzer:
             'RIGHT_ANKLE': (self.mp_pose.PoseLandmark.RIGHT_KNEE, self.mp_pose.PoseLandmark.RIGHT_ANKLE, self.mp_pose.PoseLandmark.RIGHT_HEEL)
         }
         
-    def configure_mediapipe(self):
-        """Configure and return a MediaPipe Pose instance."""
+    def configure_mediapipe(self, exercise_type=None):
+        """
+        Configure and return a MediaPipe Pose instance.
+        
+        Args:
+            exercise_type: Optional exercise type to adjust model complexity
+        """
+        # Determine model complexity based on exercise type
+        if exercise_type is not None:
+            if exercise_type in ['yoga', 'balance_poses']:
+                complexity = 2  # Highest precision for poses requiring balance/stability
+            elif exercise_type in ['squat', 'lunge', 'pushup']:
+                complexity = 1  # Medium precision for standard exercises
+            else:
+                complexity = 0  # Lower precision for simpler tracking needs
+        else:
+            complexity = self.config['model_complexity']
+        
+        # Make segmentation optional based on analysis type
+        enable_seg = True
+        if self.config.get('analysis_type') in ['basic_tracking', 'angle_only', 'quick_analysis']:
+            enable_seg = False
+        elif self.config.get('analysis_type') in ['form_visualization', 'detailed_analysis']:
+            enable_seg = True
+        else:
+            enable_seg = self.config['enable_segmentation']
+        
         return self.mp_pose.Pose(
             static_image_mode=False,  # Set to False for video processing
-            model_complexity=self.config['model_complexity'],
+            model_complexity=complexity,
             min_detection_confidence=self.config['min_detection_confidence'],
             min_tracking_confidence=self.config['min_tracking_confidence'],
-            enable_segmentation=self.config['enable_segmentation'],
+            enable_segmentation=enable_seg,
             smooth_landmarks=self.config['smooth_landmarks'],
             smooth_segmentation=self.config['smooth_segmentation']
         )
     
-    def configure_tasks_api(self, mode='VIDEO'):
-        """Configure and return a MediaPipe PoseLandmarker instance using Tasks API."""
+    def configure_tasks_api(self, mode='VIDEO', exercise_type=None):
+        """
+        Configure and return a MediaPipe PoseLandmarker instance using Tasks API.
+        
+        Args:
+            mode: Running mode (IMAGE, VIDEO, LIVE_STREAM)
+            exercise_type: Optional exercise type to adjust model complexity
+        """
         try:
             # Import Tasks API components
             BaseOptions = mp.tasks.BaseOptions
@@ -105,6 +143,28 @@ class PoseAnalyzer:
             # Set model path (you may need to adjust this)
             model_path = 'pose_landmarker.task'
             
+            # Determine model complexity based on exercise type
+            if exercise_type is not None:
+                if exercise_type in ['yoga', 'balance_poses']:
+                    complexity_name = 'pose_landmarker_heavy.task'  # Use more complex model
+                elif exercise_type in ['squat', 'lunge', 'pushup']:
+                    complexity_name = 'pose_landmarker.task'  # Standard model
+                else:
+                    complexity_name = 'pose_landmarker_lite.task'  # Lighter model
+                    
+                # Adjust model path if available
+                if os.path.exists(complexity_name):
+                    model_path = complexity_name
+            
+            # Make segmentation optional based on analysis type
+            enable_seg = True
+            if self.config.get('analysis_type') in ['basic_tracking', 'angle_only', 'quick_analysis']:
+                enable_seg = False
+            elif self.config.get('analysis_type') in ['form_visualization', 'detailed_analysis']:
+                enable_seg = True
+            else:
+                enable_seg = self.config['enable_segmentation']
+            
             # Create options based on mode
             if mode == 'IMAGE':
                 options = PoseLandmarkerOptions(
@@ -113,7 +173,7 @@ class PoseAnalyzer:
                     min_pose_detection_confidence=self.config['min_detection_confidence'],
                     min_pose_presence_confidence=self.config['min_tracking_confidence'],
                     min_tracking_confidence=self.config['min_tracking_confidence'],
-                    output_segmentation_masks=self.config['enable_segmentation']
+                    output_segmentation_masks=enable_seg
                 )
             elif mode == 'VIDEO':
                 options = PoseLandmarkerOptions(
@@ -122,7 +182,7 @@ class PoseAnalyzer:
                     min_pose_detection_confidence=self.config['min_detection_confidence'],
                     min_pose_presence_confidence=self.config['min_tracking_confidence'],
                     min_tracking_confidence=self.config['min_tracking_confidence'],
-                    output_segmentation_masks=self.config['enable_segmentation']
+                    output_segmentation_masks=enable_seg
                 )
             elif mode == 'LIVE_STREAM':
                 # For live stream mode, we need to provide a callback
@@ -138,7 +198,7 @@ class PoseAnalyzer:
                     min_pose_detection_confidence=self.config['min_detection_confidence'],
                     min_pose_presence_confidence=self.config['min_tracking_confidence'],
                     min_tracking_confidence=self.config['min_tracking_confidence'],
-                    output_segmentation_masks=self.config['enable_segmentation'],
+                    output_segmentation_masks=enable_seg,
                     result_callback=result_callback
                 )
             
@@ -148,7 +208,7 @@ class PoseAnalyzer:
             print(f"MediaPipe Tasks API not available: {str(e)}")
             print("Falling back to legacy MediaPipe API")
             self.use_tasks_api = False
-            return self.configure_mediapipe()
+            return self.configure_mediapipe(exercise_type)
     
     def _process_live_results(self, result, timestamp_ms):
         """Process live stream results from the callback."""
@@ -199,8 +259,59 @@ class PoseAnalyzer:
         """Extract coordinates from a landmark."""
         return [landmark.x, landmark.y, landmark.z]
     
+    def process_video_batch(self, frames, exercise_type=None, batch_size=10):
+        """
+        Process multiple frames in a batch for performance.
+        
+        Args:
+            frames: List of frames to process
+            exercise_type: Optional exercise type to adjust model complexity
+            batch_size: Number of frames to process in each batch
+            
+        Returns:
+            List of processed results
+        """
+        results = []
+        
+        # Initialize pose if not already done
+        if self.pose is None:
+            self.pose = self.configure_mediapipe(exercise_type)
+        
+        with self.pose as pose:
+            for i in range(0, len(frames), batch_size):
+                batch = frames[i:i+batch_size]
+                # Preprocess all frames in the batch
+                preprocessed = []
+                for frame in batch:
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    rgb_frame.flags.writeable = False
+                    preprocessed.append(rgb_frame)
+                
+                # Process each frame in the batch
+                batch_results = []
+                for frame in preprocessed:
+                    result = pose.process(frame)
+                    
+                    # Apply smart caching for stability if needed
+                    if result.pose_landmarks:
+                        landmark_visibility = [lm.visibility for lm in result.pose_landmarks.landmark]
+                        avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
+                        
+                        if avg_visibility < self.config['confidence_threshold'] and self.previous_landmarks:
+                            # Use previous landmarks if current detection is poor
+                            result.pose_landmarks = self.previous_landmarks
+                        else:
+                            # Update previous landmarks if current detection is good
+                            self.previous_landmarks = result.pose_landmarks
+                    
+                    batch_results.append(result)
+                
+                results.extend(batch_results)
+        
+        return results
+    
     def process_video(self, video_path: str, output_path: str = None, 
-                      joints_to_process: List[str] = None) -> Generator[int, None, Tuple[bool, str]]:
+                      joints_to_process: List[str] = None, exercise_type: str = None) -> Generator[int, None, Tuple[bool, str]]:
         """
         Process a video file to detect and analyze poses.
         
@@ -208,6 +319,7 @@ class PoseAnalyzer:
             video_path: Path to the input video file
             output_path: Path to save the output video (optional)
             joints_to_process: List of joint names to analyze
+            exercise_type: Type of exercise for model complexity adjustment
             
         Returns:
             Generator yielding progress percentage
@@ -216,6 +328,7 @@ class PoseAnalyzer:
         # Reset data
         self.angles_data = []
         self.detected_joints.clear()
+        self.previous_landmarks = None
         
         # Set default joints if none provided
         if joints_to_process is None:
@@ -244,7 +357,7 @@ class PoseAnalyzer:
         try:
             if self.use_tasks_api:
                 # Use Tasks API for processing
-                with self.configure_tasks_api(mode='VIDEO') as pose_landmarker:
+                with self.configure_tasks_api(mode='VIDEO', exercise_type=exercise_type) as pose_landmarker:
                     while cap.isOpened():
                         ret, frame = cap.read()
                         if not ret:
@@ -264,7 +377,13 @@ class PoseAnalyzer:
                         # Process the frame
                         results = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
                         
-                        if results.pose_landmarks:
+                        # Apply smart caching for pose stability
+                        if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
+                            # Implementation depends on Tasks API result format
+                            # This is a placeholder for the smart caching logic
+                            pass
+                        
+                        if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
                             # Draw landmarks if output is required
                             if out:
                                 annotated_image = draw_landmarks_on_image(frame, results)
@@ -282,7 +401,7 @@ class PoseAnalyzer:
                         yield int((frame_count / total_frames) * 100)
             else:
                 # Use legacy API for processing
-                with self.configure_mediapipe() as pose:
+                with self.configure_mediapipe(exercise_type) as pose:
                     while cap.isOpened():
                         ret, frame = cap.read()
                         if not ret:
@@ -298,6 +417,18 @@ class PoseAnalyzer:
                         results = pose.process(image)
                         image.flags.writeable = True
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        
+                        # Apply smart caching for pose stability
+                        if results.pose_landmarks:
+                            landmark_visibility = [lm.visibility for lm in results.pose_landmarks.landmark]
+                            avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
+                            
+                            if avg_visibility < self.config['confidence_threshold'] and self.previous_landmarks:
+                                # Use previous landmarks if current detection is poor
+                                results.pose_landmarks = self.previous_landmarks
+                            else:
+                                # Update previous landmarks if current detection is good
+                                self.previous_landmarks = results.pose_landmarks
                         
                         if results.pose_landmarks:
                             # Draw pose landmarks if output is required
@@ -342,7 +473,7 @@ class PoseAnalyzer:
         return angles
     
     def process_image(self, image_path: str, output_path: str = None, 
-                      joints_to_process: List[str] = None) -> Tuple[bool, str]:
+                      joints_to_process: List[str] = None, exercise_type: str = None) -> Tuple[bool, str]:
         """
         Process a single image to detect and analyze pose.
         
@@ -350,6 +481,7 @@ class PoseAnalyzer:
             image_path: Path to the input image
             output_path: Path to save the annotated output image
             joints_to_process: List of joint names to analyze
+            exercise_type: Type of exercise for model complexity adjustment
             
         Returns:
             Tuple of (success, message)
@@ -357,6 +489,7 @@ class PoseAnalyzer:
         # Reset data
         self.angles_data = []
         self.detected_joints.clear()
+        self.previous_landmarks = None
         
         # Set default joints if none provided
         if joints_to_process is None:
@@ -370,7 +503,7 @@ class PoseAnalyzer:
         # Process image
         if self.use_tasks_api:
             # Use Tasks API
-            with self.configure_tasks_api(mode='IMAGE') as pose_landmarker:
+            with self.configure_tasks_api(mode='IMAGE', exercise_type=exercise_type) as pose_landmarker:
                 # Convert to RGB and create MediaPipe Image
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
@@ -378,7 +511,7 @@ class PoseAnalyzer:
                 # Process the image
                 results = pose_landmarker.detect(mp_image)
                 
-                if results.pose_landmarks:
+                if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
                     # Draw landmarks if output is required
                     if output_path:
                         annotated_image = draw_landmarks_on_image(image, results)
@@ -397,7 +530,7 @@ class PoseAnalyzer:
             # Use legacy API
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-            with self.configure_mediapipe() as pose:
+            with self.configure_mediapipe(exercise_type) as pose:
                 results = pose.process(image_rgb)
                 
                 if results.pose_landmarks:
@@ -426,7 +559,8 @@ class PoseAnalyzer:
                     return False, "No pose landmarks detected in the image"
     
     def process_live_video(self, camera_id: int = 0, callback: Callable = None, 
-                          joints_to_process: List[str] = None, display: bool = True) -> None:
+                          joints_to_process: List[str] = None, display: bool = True,
+                          exercise_type: str = None) -> None:
         """
         Process live video from camera for real-time pose analysis.
         
@@ -435,10 +569,12 @@ class PoseAnalyzer:
             callback: Optional callback function for real-time data processing
             joints_to_process: List of joint names to analyze
             display: Whether to display the video with landmarks
+            exercise_type: Type of exercise for model complexity adjustment
         """
         # Reset data
         self.angles_data = []
         self.detected_joints.clear()
+        self.previous_landmarks = None
         
         # Set default joints if none provided
         if joints_to_process is None:
@@ -463,7 +599,13 @@ class PoseAnalyzer:
                 def result_processor(result, output_image, timestamp_ms):
                     nonlocal frame_count
                     
-                    if result.pose_landmarks:
+                    # Apply smart caching for pose stability
+                    if hasattr(result, 'pose_landmarks') and result.pose_landmarks:
+                        # Implementation depends on Tasks API result format
+                        # This is a placeholder for the smart caching logic
+                        pass
+                    
+                    if hasattr(result, 'pose_landmarks') and result.pose_landmarks:
                         # Calculate joint angles
                         angles = self.calculate_angles_tasks(result, joints_to_process)
                         self.angles_data.append(angles)
@@ -475,7 +617,7 @@ class PoseAnalyzer:
                     
                     frame_count += 1
                 
-                with self.configure_tasks_api(mode='LIVE_STREAM') as pose_landmarker:
+                with self.configure_tasks_api(mode='LIVE_STREAM', exercise_type=exercise_type) as pose_landmarker:
                     while cap.isOpened():
                         ret, frame = cap.read()
                         if not ret:
@@ -508,7 +650,7 @@ class PoseAnalyzer:
                             break
             else:
                 # Use legacy MediaPipe API
-                with self.configure_mediapipe() as pose:
+                with self.configure_mediapipe(exercise_type) as pose:
                     while cap.isOpened():
                         ret, frame = cap.read()
                         if not ret:
@@ -526,6 +668,18 @@ class PoseAnalyzer:
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                         
                         timestamp_ms = int(frame_count * (1000 / fps))
+                        
+                        # Apply smart caching for pose stability
+                        if results.pose_landmarks:
+                            landmark_visibility = [lm.visibility for lm in results.pose_landmarks.landmark]
+                            avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
+                            
+                            if avg_visibility < self.config['confidence_threshold'] and self.previous_landmarks:
+                                # Use previous landmarks if current detection is poor
+                                results.pose_landmarks = self.previous_landmarks
+                            else:
+                                # Update previous landmarks if current detection is good
+                                self.previous_landmarks = results.pose_landmarks
                         
                         if results.pose_landmarks:
                             # Draw pose landmarks if display is enabled
