@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import logging
 from typing import Dict, List, Optional, Tuple, Union
 import json
 from datetime import datetime
@@ -442,68 +443,77 @@ class MovementAnalyzer:
         return metrics
     
     def generate_plots(self, output_dir: str = 'output/plots') -> List[str]:
-        """
-        Generate plots visualizing the movement data.
-        
-        Args:
-            output_dir: Directory to save generated plots
-            
-        Returns:
-            List of paths to generated plot files
-        """
+        """Generate plots visualizing the movement data."""
         if not self.pose_analyzer.angles_data:
+            logging.warning("No angle data available for plotting")
             return []
         
-        os.makedirs(output_dir, exist_ok=True)
-        plot_paths = []
-        
-        # Convert data to DataFrame
-        angles_data = self.pose_analyzer.angles_data
-        detected_joints = self.pose_analyzer.detected_joints
-        
-        # Extract angle values from the complex dictionary structure
-        angle_values = {}
-        for joint in detected_joints:
-            angle_values[joint] = [d.get(joint, {}).get('angle') for d in angles_data]
-        
-        angle_df = pd.DataFrame(angle_values)
-        
-        # Generate time series plot
         try:
-            plt.figure(figsize=(12, 6))
-            for column in angle_df.columns:
-                plt.plot(angle_df[column].rolling(window=5).mean(), label=column)
+            os.makedirs(output_dir, exist_ok=True)
+            plot_paths = []
             
-            plt.legend()
-            plt.title("Joint Angle Variations Over Time (5-frame moving average)")
-            plt.xlabel("Frame")
-            plt.ylabel("Angle (degrees)")
-            plt.grid(True, alpha=0.3)
+            # Extract angle values from the complex dictionary structure
+            angle_values = {}
+            for joint in self.pose_analyzer.detected_joints:
+                values = []
+                for d in self.pose_analyzer.angles_data:
+                    # Handle missing or invalid values
+                    if joint in d and d[joint].get('angle') is not None:
+                        values.append(d[joint]['angle'])
+                    else:
+                        values.append(None)  # Use None for missing/invalid values
+                
+                # Only include joints with some valid data
+                if any(v is not None for v in values):
+                    angle_values[joint] = values
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            plot_path = os.path.join(output_dir, f"angle_plot_{timestamp}.png")
-            plt.savefig(plot_path)
-            plt.close()
+            # If no valid angle data, exit
+            if not angle_values:
+                logging.warning("No valid angle data for plotting")
+                return []
             
-            plot_paths.append(plot_path)
+            # Convert to DataFrame, handling None values
+            angle_df = pd.DataFrame(angle_values)
+            
+            # Generate time series plot
+            try:
+                plt.figure(figsize=(12, 6))
+                for column in angle_df.columns:
+                    # Use dropna to plot only valid values
+                    values = angle_df[column].dropna()
+                    if not values.empty:
+                        # Use rolling mean but only if enough data points
+                        if len(values) >= 5:
+                            plt.plot(values.rolling(window=5, min_periods=1).mean(), label=column)
+                        else:
+                            plt.plot(values, label=column)
+                
+                if not angle_df.empty and not all(angle_df[col].isna().all() for col in angle_df.columns):
+                    plt.legend()
+                    plt.title("Joint Angle Variations Over Time (5-frame moving average)")
+                    plt.xlabel("Frame")
+                    plt.ylabel("Angle (degrees)")
+                    plt.grid(True, alpha=0.3)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    plot_path = os.path.join(output_dir, f"angle_plot_{timestamp}.png")
+                    plt.savefig(plot_path)
+                    plt.close()
+                    
+                    plot_paths.append(plot_path)
+                    logging.info(f"Created angle time series plot: {plot_path}")
+                else:
+                    logging.warning("No valid data for time series plot")
+            except Exception as e:
+                logging.error(f"Error creating time series plot: {e}")
+                import traceback
+                logging.error(traceback.format_exc())
+            
+            # Add additional error handling for the box plot...
+            
+            return plot_paths
         except Exception as e:
-            print(f"Error creating time series plot: {e}")
-        
-        # Generate box plot for range distribution
-        try:
-            plt.figure(figsize=(12, 6))
-            angle_df.boxplot()
-            plt.title("Joint Angle Distributions")
-            plt.ylabel("Angle (degrees)")
-            plt.grid(True, alpha=0.3)
-            plt.xticks(rotation=45)
-            
-            plot_path = os.path.join(output_dir, f"angle_distribution_{timestamp}.png")
-            plt.savefig(plot_path)
-            plt.close()
-            
-            plot_paths.append(plot_path)
-        except Exception as e:
-            print(f"Error creating distribution plot: {e}")
-        
-        return plot_paths
+            logging.error(f"Error in generate_plots: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return []

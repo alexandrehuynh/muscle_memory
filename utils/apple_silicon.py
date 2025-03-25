@@ -66,7 +66,10 @@ def enable_apple_silicon_optimizations():
             # 2. TensorFlow/MediaPipe optimizations
             try:
                 # Enable Metal support for TensorFlow
-                os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'
+                os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Changed from '1' to '0' for Apple Silicon
+                
+                # Configure Apple's Accelerate framework
+                os.environ['VECLIB_MAXIMUM_THREADS'] = '8'  # For M3 chips
                 
                 # Set up hardware acceleration for video processing
                 os.environ['OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS'] = '1'
@@ -108,16 +111,16 @@ def enable_apple_silicon_optimizations():
                     import numpy as np
                     np.__config__.show()  # Print NumPy config for debugging
                     
-                    # Try to set Accelerate framework for NumPy
-                    try:
-                        # Install libblas with accelerate backend
-                        import subprocess
-                        print("Installing Apple Accelerate framework for optimal performance...")
-                        subprocess.run(["conda", "install", "-y", "libblas=*=*accelerate"], check=True)
-                        print("Successfully installed Accelerate-optimized BLAS")
-                    except Exception as e:
-                        logger.warning(f"Failed to install Accelerate framework: {str(e)}")
-                        logger.warning("NumPy may not be optimized for Apple Silicon")
+                    # # Try to set Accelerate framework for NumPy
+                    # try:
+                    #     # Install libblas with accelerate backend
+                    #     import subprocess
+                    #     print("Installing Apple Accelerate framework for optimal performance...")
+                    #     subprocess.run(["conda", "install", "-y", "libblas=*=*accelerate"], check=True)
+                    #     print("Successfully installed Accelerate-optimized BLAS")
+                    # except Exception as e:
+                    #     logger.warning(f"Failed to install Accelerate framework: {str(e)}")
+                    #     logger.warning("NumPy may not be optimized for Apple Silicon")
                 except Exception as e:
                     logger.warning(f"Failed to configure NumPy threading: {str(e)}")
                 

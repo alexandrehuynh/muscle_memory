@@ -4,6 +4,8 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Union, Generator, Callable
 import os
 import json
+import logging
+import math
 from datetime import datetime
 
 class PoseAnalyzer:
@@ -124,15 +126,9 @@ class PoseAnalyzer:
             smooth_landmarks=self.config['smooth_landmarks'],
             smooth_segmentation=self.config['smooth_segmentation']
         )
-    
-    def configure_tasks_api(self, mode='VIDEO', exercise_type=None):
-        """
-        Configure and return a MediaPipe PoseLandmarker instance using Tasks API.
         
-        Args:
-            mode: Running mode (IMAGE, VIDEO, LIVE_STREAM)
-            exercise_type: Optional exercise type to adjust model complexity
-        """
+    def configure_tasks_api(self, mode='VIDEO', exercise_type=None):
+        """Configure and return a MediaPipe PoseLandmarker instance using Tasks API."""
         try:
             # Import Tasks API components
             BaseOptions = mp.tasks.BaseOptions
@@ -140,73 +136,59 @@ class PoseAnalyzer:
             PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
             VisionRunningMode = mp.tasks.vision.RunningMode
             
-            # Set model path (you may need to adjust this)
-            model_path = 'pose_landmarker.task'
-            
             # Determine model complexity based on exercise type
             if exercise_type is not None:
                 if exercise_type in ['yoga', 'balance_poses']:
-                    complexity_name = 'pose_landmarker_heavy.task'  # Use more complex model
+                    model_path = 'pose_landmarker_heavy.task'
                 elif exercise_type in ['squat', 'lunge', 'pushup']:
-                    complexity_name = 'pose_landmarker.task'  # Standard model
+                    model_path = 'pose_landmarker.task'
                 else:
-                    complexity_name = 'pose_landmarker_lite.task'  # Lighter model
-                    
-                # Adjust model path if available
-                if os.path.exists(complexity_name):
-                    model_path = complexity_name
-            
-            # Make segmentation optional based on analysis type
-            enable_seg = True
-            if self.config.get('analysis_type') in ['basic_tracking', 'angle_only', 'quick_analysis']:
-                enable_seg = False
-            elif self.config.get('analysis_type') in ['form_visualization', 'detailed_analysis']:
-                enable_seg = True
+                    model_path = 'pose_landmarker_lite.task'
             else:
-                enable_seg = self.config['enable_segmentation']
+                # Default model path based on complexity
+                if self.config['model_complexity'] == 2:
+                    model_path = 'pose_landmarker_heavy.task'
+                elif self.config['model_complexity'] == 1:
+                    model_path = 'pose_landmarker.task'
+                else:
+                    model_path = 'pose_landmarker_lite.task'
             
+            # Ensure the model exists, otherwise fall back to legacy API
+            model_asset_path = model_path
+            if not os.path.exists(model_asset_path):
+                logging.warning(f"Model file {model_asset_path} not found. Using legacy MediaPipe API instead.")
+                self.use_tasks_api = False
+                return self.configure_mediapipe(exercise_type)
+                
             # Create options based on mode
+            options = None
+            
             if mode == 'IMAGE':
                 options = PoseLandmarkerOptions(
-                    base_options=BaseOptions(model_asset_path=model_path),
+                    base_options=BaseOptions(model_asset_path=model_asset_path),
                     running_mode=VisionRunningMode.IMAGE,
+                    num_poses=1,  # Just detect one person
                     min_pose_detection_confidence=self.config['min_detection_confidence'],
                     min_pose_presence_confidence=self.config['min_tracking_confidence'],
                     min_tracking_confidence=self.config['min_tracking_confidence'],
-                    output_segmentation_masks=enable_seg
+                    output_segmentation_masks=self.config['enable_segmentation']
                 )
             elif mode == 'VIDEO':
                 options = PoseLandmarkerOptions(
-                    base_options=BaseOptions(model_asset_path=model_path),
+                    base_options=BaseOptions(model_asset_path=model_asset_path),
                     running_mode=VisionRunningMode.VIDEO,
+                    num_poses=1,
                     min_pose_detection_confidence=self.config['min_detection_confidence'],
                     min_pose_presence_confidence=self.config['min_tracking_confidence'],
                     min_tracking_confidence=self.config['min_tracking_confidence'],
-                    output_segmentation_masks=enable_seg
-                )
-            elif mode == 'LIVE_STREAM':
-                # For live stream mode, we need to provide a callback
-                def result_callback(result, output_image, timestamp_ms):
-                    # Process results in real-time
-                    if hasattr(result, 'pose_landmarks') and result.pose_landmarks:
-                        # Calculate angles and store them
-                        self._process_live_results(result, timestamp_ms)
-                
-                options = PoseLandmarkerOptions(
-                    base_options=BaseOptions(model_asset_path=model_path),
-                    running_mode=VisionRunningMode.LIVE_STREAM,
-                    min_pose_detection_confidence=self.config['min_detection_confidence'],
-                    min_pose_presence_confidence=self.config['min_tracking_confidence'],
-                    min_tracking_confidence=self.config['min_tracking_confidence'],
-                    output_segmentation_masks=enable_seg,
-                    result_callback=result_callback
+                    output_segmentation_masks=self.config['enable_segmentation']
                 )
             
             return PoseLandmarker.create_from_options(options)
-        
-        except (AttributeError, ImportError) as e:
-            print(f"MediaPipe Tasks API not available: {str(e)}")
-            print("Falling back to legacy MediaPipe API")
+            
+        except Exception as e:
+            logging.error(f"Failed to configure MediaPipe Tasks API: {e}")
+            logging.info("Falling back to legacy MediaPipe API")
             self.use_tasks_api = False
             return self.configure_mediapipe(exercise_type)
     
@@ -229,7 +211,7 @@ class PoseAnalyzer:
             # Update detected joints
             self.detected_joints.update(angles.keys())
         
-    def calculate_angle(self, a: List[float], b: List[float], c: List[float]) -> float:
+    def calculate_angle(self, a: List[float], b: List[float], c: List[float]) -> Optional[float]:
         """
         Calculate the angle between three points in 3D space.
         
@@ -239,22 +221,49 @@ class PoseAnalyzer:
             c: Third point coordinates [x, y, z]
             
         Returns:
-            Angle in degrees
+            Angle in degrees or None if calculation fails
         """
-        a = np.array(a)
-        b = np.array(b)
-        c = np.array(c)
+        try:
+            a = np.array(a)
+            b = np.array(b)
+            c = np.array(c)
+            
+            # Check for NaN values
+            if np.isnan(a).any() or np.isnan(b).any() or np.isnan(c).any():
+                logging.warning(f"NaN values detected in coordinates: a={a}, b={b}, c={c}")
+                return None
+                
+            # Calculate vectors
+            ba = a - b
+            bc = c - b
+            
+            # Check for zero-length vectors
+            ba_norm = np.linalg.norm(ba)
+            bc_norm = np.linalg.norm(bc)
+            
+            if ba_norm < 1e-10 or bc_norm < 1e-10:
+                logging.warning(f"Zero-length vector detected: |ba|={ba_norm}, |bc|={bc_norm}")
+                return None
+                
+            # Calculate angle using dot product
+            cosine_angle = np.dot(ba, bc) / (ba_norm * bc_norm)
+            
+            # Ensure value is within valid range for arccos
+            cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+            
+            angle = np.degrees(np.arccos(cosine_angle))
+            
+            # Final sanity check
+            if np.isnan(angle) or np.isinf(angle):
+                logging.warning(f"Invalid angle result: {angle}")
+                return None
+                
+            return float(angle)  # Convert to native Python float
+            
+        except Exception as e:
+            logging.error(f"Error in calculate_angle: {e}")
+            return None
         
-        # Calculate vectors
-        ba = a - b
-        bc = c - b
-        
-        # Calculate angle using dot product
-        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
-        angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
-        
-        return np.degrees(angle)
-    
     def get_landmark_coords(self, landmark) -> List[float]:
         """Extract coordinates from a landmark."""
         return [landmark.x, landmark.y, landmark.z]
@@ -369,8 +378,8 @@ class PoseAnalyzer:
                         
                         # Convert to RGB and create MediaPipe Image
                         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-                        
+                        image_height, image_width = rgb_frame.shape[:2]
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame, width=image_width, height=image_height)                        
                         # Calculate timestamp for video (assuming constant FPS)
                         timestamp_ms = int((frame_count / fps) * 1000)
                         
@@ -414,6 +423,8 @@ class PoseAnalyzer:
                         # Process the frame
                         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         image.flags.writeable = False
+                        # Add image dimensions explicitly
+                        image_height, image_width = image.shape[:2]
                         results = pose.process(image)
                         image.flags.writeable = True
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
@@ -506,7 +517,8 @@ class PoseAnalyzer:
             with self.configure_tasks_api(mode='IMAGE', exercise_type=exercise_type) as pose_landmarker:
                 # Convert to RGB and create MediaPipe Image
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+                image_height, image_width = rgb_image.shape[:2]
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image, width=image_width, height=image_height)
                 
                 # Process the image
                 results = pose_landmarker.detect(mp_image)
@@ -628,8 +640,9 @@ class PoseAnalyzer:
                             continue
                         
                         # Convert to RGB and create MediaPipe Image
-                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        image_height, image_width = rgb_image.shape[:2]
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image, width=image_width, height=image_height)
                         
                         # Calculate timestamp
                         timestamp_ms = int(frame_count * (1000 / fps))
@@ -715,16 +728,7 @@ class PoseAnalyzer:
                 cv2.destroyAllWindows()
     
     def calculate_angles(self, results, joints_to_process: List[str]) -> Dict:
-        """
-        Calculate angles for specified joints from pose landmarks.
-        
-        Args:
-            results: MediaPipe pose process results
-            joints_to_process: List of joint names to analyze
-            
-        Returns:
-            Dictionary of joint angles with confidences
-        """
+        """Calculate angles for specified joints from pose landmarks."""
         angles = {}
         landmarks = results.pose_world_landmarks or results.pose_landmarks
         if not landmarks:
@@ -738,14 +742,27 @@ class PoseAnalyzer:
                     coords2 = self.get_landmark_coords(landmarks.landmark[p2.value])
                     coords3 = self.get_landmark_coords(landmarks.landmark[p3.value])
                     
+                    # Log coordinates for debugging
+                    logging.debug(f"Joint {joint} - coords1: {coords1}, coords2: {coords2}, coords3: {coords3}")
+                    
                     visibility = min(landmarks.landmark[p.value].visibility for p in (p1, p2, p3))
                     
                     if visibility > 0.5:
                         angle = self.calculate_angle(coords1, coords2, coords3)
-                        angles[joint] = {
-                            'angle': angle,
-                            'confidence': visibility
-                        }
+                        
+                        # Check for invalid values
+                        if angle is None or math.isnan(angle) or math.isinf(angle):
+                            logging.warning(f"Invalid angle calculated for {joint}: {angle}")
+                            angles[joint] = {
+                                'angle': None,
+                                'confidence': visibility,
+                                'error': 'Invalid angle calculation'
+                            }
+                        else:
+                            angles[joint] = {
+                                'angle': angle,
+                                'confidence': visibility
+                            }
                     else:
                         angles[joint] = {
                             'angle': None,
@@ -753,6 +770,7 @@ class PoseAnalyzer:
                             'error': 'Low visibility'
                         }
                 except Exception as e:
+                    logging.error(f"Error calculating angle for {joint}: {e}")
                     angles[joint] = {
                         'angle': None,
                         'confidence': 0,
@@ -760,7 +778,7 @@ class PoseAnalyzer:
                     }
         
         return angles
-    
+
     def get_angles_data(self) -> List[Dict]:
         """Get the collected angles data."""
         return self.angles_data

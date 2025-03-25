@@ -1,3 +1,6 @@
+from utils.apple_silicon import enable_apple_silicon_optimizations
+enable_apple_silicon_optimizations()
+
 import uvicorn
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,9 +9,11 @@ import os
 from api.routers import movement, feedback
 from core.config import settings
 from utils.video.processor import VideoProcessor
+from utils.logger import setup_logging
 
-from utils.apple_silicon import enable_apple_silicon_optimizations
-
+# Setup logging
+logger = setup_logging()
+logger.info("Starting Muscle Memory API")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

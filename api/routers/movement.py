@@ -9,6 +9,8 @@ from datetime import datetime
 
 from models.movement.analyzer import MovementAnalyzer
 from utils.video.processor import VideoProcessor
+from utils.serialization import CustomJSONResponse, sanitize_for_json
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
@@ -74,14 +76,14 @@ async def analyze_movement(
             "message": message,
             "analysis_id": analysis_id,
             "exercise_type": analysis_results.get("exercise_type", "unknown"),
-            "metrics": analysis_results.get("metrics", {}),
-            "statistics": analysis_results.get("statistics", {}),
+            "metrics": sanitize_for_json(analysis_results.get("metrics", {})),
+            "statistics": sanitize_for_json(analysis_results.get("statistics", {})),
             "annotated_video": output_path if save_annotated_video else None,
             "plots_dir": plot_dir
         }
-        
-        return JSONResponse(content=response)
-    
+
+        return CustomJSONResponse(content=response)
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
