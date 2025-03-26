@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib
 import os
 import logging
 from typing import Dict, List, Optional, Tuple, Union
@@ -444,6 +445,9 @@ class MovementAnalyzer:
     
     def generate_plots(self, output_dir: str = 'output/plots') -> List[str]:
         """Generate plots visualizing the movement data."""
+        # Set non-interactive backend for background thread
+        matplotlib.use('Agg')  # Use non-interactive backend
+        
         if not self.pose_analyzer.angles_data:
             logging.warning("No angle data available for plotting")
             return []
