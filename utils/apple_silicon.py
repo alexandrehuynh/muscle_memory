@@ -73,6 +73,12 @@ def enable_apple_silicon_optimizations():
                 
                 # Set up hardware acceleration for video processing
                 os.environ['OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS'] = '1'
+
+                # Enables Metal GPU support
+                os.environ['TF_METAL_ENABLED'] = '1'
+
+                # Optimizes GPU memory allocation
+                os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
                 
                 # Try to import tensorflow and configure for Metal
                 try:
