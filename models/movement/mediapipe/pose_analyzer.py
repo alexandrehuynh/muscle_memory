@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from datetime import datetime
+from ..visualization.skeleton_renderer import SkeletonRenderer, VisualizationMode, VisualizationConfig
 
 class PoseAnalyzer:
     """
@@ -40,6 +41,21 @@ class PoseAnalyzer:
         # Initialize MediaPipe drawing and pose solutions
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_pose = mp.solutions.pose
+        
+        # Initialize skeleton renderer with enhanced configuration
+        is_detailed = analysis_type in ['detailed_analysis', 'form_visualization']
+        self.skeleton_renderer = SkeletonRenderer(
+            VisualizationConfig(
+                mode=VisualizationMode.ANALYSIS if is_detailed else VisualizationMode.REALTIME,
+                show_reference_lines=is_detailed,
+                show_angles=True,
+                show_motion_trails=is_detailed,
+                confidence_threshold=min_detection_confidence,
+                smoothing_factor=0.7 if smooth_landmarks else 0.0,  # Use smoothing factor if enabled
+                min_detection_threshold=min_detection_confidence * 0.4,  # Set threshold relative to detection confidence
+                line_style="outlined" if is_detailed else "solid"  # Use outlined style for detailed analysis
+            )
+        )
         
         # Store configuration
         self.config = {
@@ -339,6 +355,9 @@ class PoseAnalyzer:
         self.detected_joints.clear()
         self.previous_landmarks = None
         
+        # Update skeleton renderer configuration
+        self.skeleton_renderer.config.exercise_type = exercise_type
+        
         # Set default joints if none provided
         if joints_to_process is None:
             joints_to_process = list(self.joint_mappings.keys())
@@ -395,10 +414,18 @@ class PoseAnalyzer:
                         if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
                             # Draw landmarks if output is required
                             if out:
-                                annotated_image = draw_landmarks_on_image(frame, results)
+                                # Calculate joint angles
+                                angles = self.calculate_angles_tasks(results, joints_to_process)
+                                
+                                # Use skeleton renderer for visualization
+                                annotated_image = self.skeleton_renderer.render(
+                                    frame,
+                                    results.pose_landmarks.landmark,
+                                    angles
+                                )
                                 out.write(annotated_image)
                             
-                            # Calculate joint angles (implement Tasks API version)
+                            # Calculate joint angles
                             angles = self.calculate_angles_tasks(results, joints_to_process)
                             self.angles_data.append(angles)
                             self.detected_joints.update(angles.keys())
@@ -444,13 +471,16 @@ class PoseAnalyzer:
                         if results.pose_landmarks:
                             # Draw pose landmarks if output is required
                             if out:
-                                self.mp_drawing.draw_landmarks(
+                                # Calculate joint angles
+                                angles = self.calculate_angles(results, joints_to_process)
+                                
+                                # Use skeleton renderer for visualization
+                                annotated_image = self.skeleton_renderer.render(
                                     image,
-                                    results.pose_landmarks,
-                                    self.mp_pose.POSE_CONNECTIONS,
-                                    self.mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2),
-                                    self.mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
+                                    results.pose_landmarks.landmark,
+                                    angles
                                 )
+                                out.write(annotated_image)
                             
                             # Calculate joint angles
                             angles = self.calculate_angles(results, joints_to_process)
@@ -502,6 +532,9 @@ class PoseAnalyzer:
         self.detected_joints.clear()
         self.previous_landmarks = None
         
+        # Update skeleton renderer configuration
+        self.skeleton_renderer.config.exercise_type = exercise_type
+        
         # Set default joints if none provided
         if joints_to_process is None:
             joints_to_process = list(self.joint_mappings.keys())
@@ -526,7 +559,15 @@ class PoseAnalyzer:
                 if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
                     # Draw landmarks if output is required
                     if output_path:
-                        annotated_image = draw_landmarks_on_image(image, results)
+                        # Calculate joint angles
+                        angles = self.calculate_angles_tasks(results, joints_to_process)
+                        
+                        # Use skeleton renderer for visualization
+                        annotated_image = self.skeleton_renderer.render(
+                            image,
+                            results.pose_landmarks.landmark,
+                            angles
+                        )
                         os.makedirs(os.path.dirname(output_path), exist_ok=True)
                         cv2.imwrite(output_path, annotated_image)
                     
@@ -548,13 +589,17 @@ class PoseAnalyzer:
                 if results.pose_landmarks:
                     # Draw landmarks if output is required
                     if output_path:
-                        self.mp_drawing.draw_landmarks(
+                        # Calculate joint angles
+                        angles = self.calculate_angles(results, joints_to_process)
+                        
+                        # Use skeleton renderer for visualization
+                        annotated_image = self.skeleton_renderer.render(
                             image,
-                            results.pose_landmarks,
-                            self.mp_pose.POSE_CONNECTIONS,
-                            self.mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2),
-                            self.mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
+                            results.pose_landmarks.landmark,
+                            angles
                         )
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        cv2.imwrite(output_path, annotated_image)
                     
                     # Calculate joint angles
                     angles = self.calculate_angles(results, joints_to_process)
@@ -587,6 +632,10 @@ class PoseAnalyzer:
         self.angles_data = []
         self.detected_joints.clear()
         self.previous_landmarks = None
+        
+        # Update skeleton renderer configuration
+        self.skeleton_renderer.config.exercise_type = exercise_type
+        self.skeleton_renderer.config.mode = VisualizationMode.REALTIME
         
         # Set default joints if none provided
         if joints_to_process is None:
@@ -640,7 +689,7 @@ class PoseAnalyzer:
                             continue
                         
                         # Convert to RGB and create MediaPipe Image
-                        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         image_height, image_width = rgb_image.shape[:2]
                         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image, width=image_width, height=image_height)
                         
@@ -697,13 +746,16 @@ class PoseAnalyzer:
                         if results.pose_landmarks:
                             # Draw pose landmarks if display is enabled
                             if display:
-                                self.mp_drawing.draw_landmarks(
+                                # Calculate joint angles
+                                angles = self.calculate_angles(results, joints_to_process)
+                                
+                                # Use skeleton renderer for visualization
+                                annotated_image = self.skeleton_renderer.render(
                                     image,
-                                    results.pose_landmarks,
-                                    self.mp_pose.POSE_CONNECTIONS,
-                                    self.mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2),
-                                    self.mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
+                                    results.pose_landmarks.landmark,
+                                    angles
                                 )
+                                cv2.imshow('MediaPipe Pose', annotated_image)
                             
                             # Calculate joint angles
                             angles = self.calculate_angles(results, joints_to_process)
@@ -713,10 +765,6 @@ class PoseAnalyzer:
                             # Call user callback if provided
                             if callback:
                                 callback(angles, timestamp_ms)
-                        
-                        # Display the frame with landmarks if requested
-                        if display:
-                            cv2.imshow('MediaPipe Pose', image)
                         
                         # Break on ESC key
                         if cv2.waitKey(5) & 0xFF == 27:
