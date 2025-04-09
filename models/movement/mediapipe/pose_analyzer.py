@@ -488,10 +488,15 @@ class PoseAnalyzer:
                         # Calculate joint angles
                         angles = self.calculate_angles(results, joints_to_process)
                         
+                        # Only pass landmarks to the renderer if they exist
+                        landmarks_list = None
+                        if results.pose_landmarks:
+                            landmarks_list = results.pose_landmarks.landmark
+                        
                         # Use skeleton renderer for visualization
                         annotated_image = self.skeleton_renderer.render(
                             image,
-                            results.pose_landmarks.landmark,
+                            landmarks_list,
                             angles
                         )
                         out.write(annotated_image)
@@ -573,10 +578,15 @@ class PoseAnalyzer:
                     # Calculate joint angles
                     angles = self.calculate_angles(results, joints_to_process)
                     
+                    # Only pass landmarks to the renderer if they exist
+                    landmarks_list = None
+                    if results.pose_landmarks:
+                        landmarks_list = results.pose_landmarks.landmark
+                    
                     # Use skeleton renderer for visualization
                     annotated_image = self.skeleton_renderer.render(
                         image,
-                        results.pose_landmarks.landmark,
+                        landmarks_list,
                         angles
                     )
                     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -685,10 +695,15 @@ class PoseAnalyzer:
                         # Calculate joint angles
                         angles = self.calculate_angles(results, joints_to_process)
                         
+                        # Only pass landmarks to the renderer if they exist
+                        landmarks_list = None
+                        if results.pose_landmarks:
+                            landmarks_list = results.pose_landmarks.landmark
+                        
                         # Use skeleton renderer for visualization
                         annotated_image = self.skeleton_renderer.render(
                             image,
-                            results.pose_landmarks.landmark,
+                            landmarks_list,
                             angles
                         )
                         cv2.imshow('MediaPipe Pose', annotated_image)
