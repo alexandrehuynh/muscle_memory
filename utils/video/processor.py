@@ -1,18 +1,28 @@
 import cv2
 import os
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Union, Generator
+from typing import Dict, List, Optional, Tuple, Union, Generator, Callable
 from datetime import datetime
 
 class VideoProcessor:
     """
-    Utility class for handling video processing operations.
+    VideoProcessor is a utility class that handles ONLY video input/output operations.
+    
+    Responsibilities:
+    - Video reading and writing
+    - Frame-by-frame processing
+    - Progress tracking
+    - Directory management for video files
+    
+    This class does NOT handle pose detection, visualization, or analysis.
     """
     
     @staticmethod
     def create_output_dirs():
         """Create necessary output directories."""
         os.makedirs("output", exist_ok=True)
+        os.makedirs("output/videos", exist_ok=True)
+        os.makedirs("output/frames", exist_ok=True)
         os.makedirs("temp/videos", exist_ok=True)
         os.makedirs("input", exist_ok=True)
     
@@ -42,6 +52,65 @@ class VideoProcessor:
         
         cap.release()
         return info
+    
+    @staticmethod
+    def read_video_frames(video_path: str, process_every_n: int = 1, 
+                         progress_callback: Optional[Callable[[int, int], None]] = None) -> Generator[Tuple[np.ndarray, int], None, None]:
+        """
+        Read frames from a video file as a generator.
+        
+        Args:
+            video_path: Path to the video file
+            process_every_n: Process every Nth frame (for efficiency)
+            progress_callback: Optional callback for progress updates
+        
+        Yields:
+            Tuples of (frame, frame_index)
+        """
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Could not open video file: {video_path}")
+            
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        current_frame = 0
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            if current_frame % process_every_n == 0:
+                # Report progress if callback is provided
+                if progress_callback:
+                    progress_callback(current_frame, total_frames)
+                    
+                yield frame, current_frame
+                
+            current_frame += 1
+            
+        cap.release()
+    
+    @staticmethod
+    def create_video_writer(output_path: str, width: int, height: int, 
+                           fps: float = 30.0, codec: str = 'mp4v') -> cv2.VideoWriter:
+        """
+        Create a video writer for output.
+        
+        Args:
+            output_path: Path for the output video
+            width: Frame width
+            height: Frame height
+            fps: Frames per second
+            codec: Codec four character code
+            
+        Returns:
+            OpenCV VideoWriter object
+        """
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        
+        fourcc = cv2.VideoWriter_fourcc(*codec)
+        return cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     @staticmethod
     def record_from_webcam(output_path: str = None, record_time: int = None) -> str:

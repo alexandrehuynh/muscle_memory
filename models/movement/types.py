@@ -1,18 +1,14 @@
-from enum import Enum, auto
+from enum import Enum
 
 class AnalysisType(str, Enum):
     """
     Types of movement analysis that can be performed.
     
     Options:
-    - DETAILED_ANALYSIS: Full detailed analysis with metrics and visualizations
-    - FORM_VISUALIZATION: Focus on form visualization with reference lines and angles
-    - BASIC_TRACKING: Simple tracking with minimal processing
-    - ANGLE_ONLY: Only calculate joint angles without additional metrics
-    - QUICK_ANALYSIS: Simplified analysis optimized for speed
+    - DETAILED: Full detailed analysis with metrics and visualizations
+    - QUICK: Simplified analysis optimized for speed
+    - REALTIME: Analysis optimized for real-time tracking
     """
-    DETAILED_ANALYSIS = "detailed_analysis"
-    FORM_VISUALIZATION = "form_visualization"
-    BASIC_TRACKING = "basic_tracking"
-    ANGLE_ONLY = "angle_only"
-    QUICK_ANALYSIS = "quick_analysis" 
+    DETAILED = "detailed"
+    QUICK = "quick"
+    REALTIME = "realtime" 

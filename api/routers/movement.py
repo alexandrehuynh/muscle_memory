@@ -7,7 +7,7 @@ from typing import List, Optional
 import uuid
 from datetime import datetime
 
-from models.movement.analyzer import MovementAnalyzer
+from models.movement import MovementPipeline, PipelineConfig
 from models.movement.types import AnalysisType
 from utils.video.processor import VideoProcessor
 from utils.serialization import CustomJSONResponse, sanitize_for_json
@@ -23,7 +23,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def analyze_movement(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
-    model_complexity: int = Query(2, ge=0, le=2, description="MediaPipe model complexity (0-2)"),
+    model_complexity: int = Query(1, ge=0, le=2, description="MediaPipe model complexity (0-2)"),
     save_annotated_video: bool = Query(False, description="Whether to save the annotated video"),
     selected_joints: List[str] = Query(None, description="Specific joints to analyze"),
     analysis_type: Optional[AnalysisType] = Query(None, description="Type of analysis to perform")
@@ -51,9 +51,17 @@ async def analyze_movement(
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(output_dir, f"analyzed_{timestamp}_{analysis_id}{file_extension}")
         
+        # Create pipeline configuration
+        analysis_type_str = analysis_type.value if analysis_type else "detailed"
+        pipeline_config = PipelineConfig(
+            model_complexity=model_complexity,
+            analysis_type=analysis_type_str,
+            process_every_n_frames=1 if analysis_type_str == "detailed" else 2
+        )
+        
         # Create analyzer and process video
-        analyzer = MovementAnalyzer(model_complexity=model_complexity, analysis_type=analysis_type)
-        success, message = analyzer.process_video(temp_file_path, output_path, selected_joints)
+        pipeline = MovementPipeline(pipeline_config)
+        success, message = pipeline.process_video(temp_file_path, output_path, selected_joints)
         
         if not success:
             # Clean up temporary file
@@ -62,26 +70,18 @@ async def analyze_movement(
             raise HTTPException(status_code=400, detail=message)
         
         # Analyze movement data
-        analysis_success, analysis_results, analysis_message = analyzer.analyze_movement(selected_joints)
+        analysis_success, analysis_results, analysis_message = pipeline.analyze_movement(selected_joints)
         
         if not analysis_success:
             raise HTTPException(status_code=400, detail=analysis_message)
         
-        # Generate plots in the background
-        plot_dir = os.path.join("output", "plots", analysis_id)
-        os.makedirs(plot_dir, exist_ok=True)
+        # Background task to clean up temp file
+        async def cleanup_temp_file(temp_file_path):
+            """Clean up temp file."""
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
         
-        async def process_and_cleanup(analyzer, plot_dir, temp_file_path):
-            """Process plots and clean up temp file."""
-            try:
-                # First generate plots
-                await analyzer.generate_plots(plot_dir)
-            finally:
-                # Always clean up the temp file regardless of errors
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-        
-        background_tasks.add_task(process_and_cleanup, analyzer, plot_dir, temp_file_path)
+        background_tasks.add_task(cleanup_temp_file, temp_file_path)
         
         # Prepare response
         response = {
@@ -90,8 +90,7 @@ async def analyze_movement(
             "exercise_type": analysis_results.get("exercise_type", "unknown"),
             "metrics": sanitize_for_json(analysis_results.get("metrics", {})),
             "statistics": sanitize_for_json(analysis_results.get("statistics", {})),
-            "annotated_video": output_path if save_annotated_video else None,
-            "plots_dir": plot_dir
+            "annotated_video": output_path if save_annotated_video else None
         }
 
         return CustomJSONResponse(content=response)
@@ -113,8 +112,8 @@ async def get_supported_exercises():
 @router.get("/joints")
 async def get_available_joints():
     """Get list of joint angles that can be analyzed."""
-    analyzer = MovementAnalyzer()
-    joints = list(analyzer.pose_analyzer.joint_mappings.keys())
+    joint_calculator = MovementPipeline().joint_calculator
+    joints = joint_calculator.get_available_joints()
     
     return {
         "available_joints": joints
