@@ -35,7 +35,7 @@ class PoseAnalyzer:
             smooth_landmarks: Whether to apply temporal filtering to reduce jitter
             smooth_segmentation: Whether to apply temporal filtering to segmentation mask
             process_every_n_frames: Process every N frames (skip frames for efficiency)
-            use_tasks_api: Whether to use the newer MediaPipe Tasks API (ignored, always False)
+            use_tasks_api: Whether to use the newer MediaPipe Tasks API
             analysis_type: Type of analysis to perform (affects segmentation needs)
         """
         # Initialize MediaPipe drawing and pose solutions
@@ -66,15 +66,15 @@ class PoseAnalyzer:
             'smooth_landmarks': smooth_landmarks,
             'smooth_segmentation': smooth_segmentation,
             'process_every_n_frames': process_every_n_frames,
-            'use_tasks_api': False,  # Always use legacy API
+            'use_tasks_api': use_tasks_api,
             'analysis_type': analysis_type,
             'confidence_threshold': 0.6,  # Threshold for pose caching
             'landmark_history_size': 10,  # Store history of 10 frames for each landmark
             'confidence_decay_rate': 0.85  # Rate at which confidence decays over time
         }
         
-        # Flag for API type - always use legacy API
-        self.use_tasks_api = False
+        # Flag for API type
+        self.use_tasks_api = use_tasks_api
         
         # Initialize variables to store angles data
         self.angles_data = []
@@ -84,7 +84,9 @@ class PoseAnalyzer:
         self.joint_mappings = self._create_joint_mappings()
         
         # Initialize pose detection model only for legacy API
-        self.pose = None  # Will be initialized when needed
+        # For Tasks API, we'll initialize per usage mode
+        if not use_tasks_api:
+            self.pose = None  # Will be initialized when needed
             
         # Enhanced landmark persistence system
         self.previous_landmarks = None  # Keep for backward compatibility
@@ -361,15 +363,6 @@ class PoseAnalyzer:
         
         return results
     
-    def clear_history(self):
-        """Clear all history data to prevent memory issues."""
-        self.previous_landmarks = None
-        self.landmark_history = {}
-        self.landmark_confidence_history = {}
-        self.frames_since_detection = {}
-        self.angles_data = []
-        self.detected_joints.clear()
-
     def process_video(self, video_path: str, output_path: str = None, 
                       joints_to_process: List[str] = None, exercise_type: str = None, 
                       analysis_type: str = None) -> Generator[int, None, Tuple[bool, str]]:
@@ -388,7 +381,9 @@ class PoseAnalyzer:
             Final tuple of (success, message)
         """
         # Reset data
-        self.clear_history()
+        self.angles_data = []
+        self.detected_joints.clear()
+        self.previous_landmarks = None
         
         # Update skeleton renderer configuration
         self.skeleton_renderer.config.exercise_type = exercise_type
@@ -432,86 +427,139 @@ class PoseAnalyzer:
         frame_count = 0
         
         try:
-            # Use legacy API for processing
-            with self.configure_mediapipe(exercise_type) as pose:
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    
-                    frame_count += 1
-                    if frame_count % self.config['process_every_n_frames'] != 0:
-                        continue
-                    
-                    # Process the frame
-                    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    image.flags.writeable = False
-                    # Add image dimensions explicitly
-                    image_height, image_width = image.shape[:2]
-                    results = pose.process(image)
-                    image.flags.writeable = True
-                    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                    
-                    # Apply smart caching for pose stability
-                    if results.pose_landmarks:
-                        landmark_visibility = [lm.visibility for lm in results.pose_landmarks.landmark]
-                        avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
+            if self.use_tasks_api:
+                # Use Tasks API for processing
+                with self.configure_tasks_api(mode='VIDEO', exercise_type=exercise_type) as pose_landmarker:
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
                         
-                        # Update landmark history regardless of visibility
-                        self._update_landmark_history(results.pose_landmarks, {})
+                        frame_count += 1
+                        if frame_count % self.config['process_every_n_frames'] != 0:
+                            continue
                         
-                        # Keep backward compatibility with previous_landmarks
-                        if avg_visibility >= self.config['confidence_threshold']:
-                            self.previous_landmarks = results.pose_landmarks
-                    
-                    # Track current mode for cross-mode consistency
-                    if hasattr(results, 'current_mode'):
-                        # Handle mode transition
-                        if self.current_mode != results.current_mode:
-                            # We're transitioning modes, keep using history more heavily
-                            old_decay_rate = self.config['confidence_decay_rate']
-                            self.config['confidence_decay_rate'] = min(0.95, old_decay_rate * 1.2)
+                        # Convert to RGB and create MediaPipe Image
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        image_height, image_width = rgb_frame.shape[:2]
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame, width=image_width, height=image_height)                        
+                        # Calculate timestamp for video (assuming constant FPS)
+                        timestamp_ms = int((frame_count / fps) * 1000)
+                        
+                        # Process the frame
+                        results = pose_landmarker.detect_for_video(mp_image, timestamp_ms)
+                        
+                        # Apply smart caching for pose stability
+                        if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
+                            # Implementation depends on Tasks API result format
+                            # This is a placeholder for the smart caching logic
+                            pass
+                        
+                        if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
+                            # Draw landmarks if output is required
+                            if out:
+                                # Calculate joint angles
+                                angles = self.calculate_angles_tasks(results, joints_to_process)
+                                
+                                # Use skeleton renderer for visualization
+                                annotated_image = self.skeleton_renderer.render(
+                                    frame,
+                                    results.pose_landmarks.landmark,
+                                    angles
+                                )
+                                out.write(annotated_image)
                             
-                            # Restore normal decay rate after a few frames
-                            def restore_decay_rate():
-                                self.config['confidence_decay_rate'] = old_decay_rate
-                            # (In a real implementation, you'd need a timer or frame counter to restore)
+                            # Calculate joint angles
+                            angles = self.calculate_angles_tasks(results, joints_to_process)
+                            self.angles_data.append(angles)
+                            self.detected_joints.update(angles.keys())
+                        elif out:
+                            # Write the original frame if no landmarks detected
+                            out.write(frame)
+                        
+                        # Update progress
+                        yield int((frame_count / total_frames) * 100)
+            else:
+                # Use legacy API for processing
+                with self.configure_mediapipe(exercise_type) as pose:
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        
+                        frame_count += 1
+                        if frame_count % self.config['process_every_n_frames'] != 0:
+                            continue
+                        
+                        # Process the frame
+                        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        image.flags.writeable = False
+                        # Add image dimensions explicitly
+                        image_height, image_width = image.shape[:2]
+                        results = pose.process(image)
+                        image.flags.writeable = True
+                        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        
+                        # Apply smart caching for pose stability
+                        if results.pose_landmarks:
+                            landmark_visibility = [lm.visibility for lm in results.pose_landmarks.landmark]
+                            avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
                             
-                        self.current_mode = results.current_mode
-                    # Add handling for direct mode change from MovementAnalyzer
-                    elif hasattr(self, 'current_mode') and self.current_mode is not None:
-                        # This case handles mode changes set directly by MovementAnalyzer
-                        pass  # The current_mode is already set, nothing more to do
-                    
-                    # Draw pose landmarks if output is required
-                    if out:
-                        # Calculate joint angles
-                        angles = self.calculate_angles(results, joints_to_process)
+                            # Update landmark history regardless of visibility
+                            self._update_landmark_history(results.pose_landmarks, {})
+                            
+                            # Keep backward compatibility with previous_landmarks
+                            if avg_visibility >= self.config['confidence_threshold']:
+                                self.previous_landmarks = results.pose_landmarks
                         
-                        # Use skeleton renderer for visualization
-                        annotated_image = self.skeleton_renderer.render(
-                            image,
-                            results.pose_landmarks.landmark,
-                            angles
-                        )
-                        out.write(annotated_image)
+                        # Track current mode for cross-mode consistency
+                        if hasattr(results, 'current_mode'):
+                            # Handle mode transition
+                            if self.current_mode != results.current_mode:
+                                # We're transitioning modes, keep using history more heavily
+                                old_decay_rate = self.config['confidence_decay_rate']
+                                self.config['confidence_decay_rate'] = min(0.95, old_decay_rate * 1.2)
+                                
+                                # Restore normal decay rate after a few frames
+                                def restore_decay_rate():
+                                    self.config['confidence_decay_rate'] = old_decay_rate
+                                # (In a real implementation, you'd need a timer or frame counter to restore)
+                                
+                            self.current_mode = results.current_mode
+                        # Add handling for direct mode change from MovementAnalyzer
+                        elif hasattr(self, 'current_mode') and self.current_mode is not None:
+                            # This case handles mode changes set directly by MovementAnalyzer
+                            pass  # The current_mode is already set, nothing more to do
                         
-                    # Make sure we calculate and store angles data regardless of output
-                    if results.pose_landmarks:
-                        # Calculate joint angles and store the data
-                        angles = self.calculate_angles(results, joints_to_process)
-                        self.angles_data.append(angles)
-                        self.detected_joints.update(angles.keys())
-                    
-                    # Write the annotated frame to output video
-                    if out and not out.isOpened():
-                        logging.warning("Output video writer is not open, trying to reopen")
-                        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
-                        if out.isOpened() and results.pose_landmarks:
+                        # Draw pose landmarks if output is required
+                        if out:
+                            # Calculate joint angles
+                            angles = self.calculate_angles(results, joints_to_process)
+                            
+                            # Use skeleton renderer for visualization
+                            annotated_image = self.skeleton_renderer.render(
+                                image,
+                                results.pose_landmarks.landmark,
+                                angles
+                            )
                             out.write(annotated_image)
-                    
-                    # Update progress
-                    yield int((frame_count / total_frames) * 100)
+                            
+                        # Make sure we calculate and store angles data regardless of output
+                        if results.pose_landmarks:
+                            # Calculate joint angles and store the data
+                            angles = self.calculate_angles(results, joints_to_process)
+                            self.angles_data.append(angles)
+                            self.detected_joints.update(angles.keys())
+                        
+                        # Write the annotated frame to output video
+                        if out and not out.isOpened():
+                            logging.warning("Output video writer is not open, trying to reopen")
+                            out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+                            if out.isOpened() and results.pose_landmarks:
+                                out.write(annotated_image)
+                        
+                        # Update progress
+                        yield int((frame_count / total_frames) * 100)
         
         finally:
             cap.release()
@@ -547,7 +595,9 @@ class PoseAnalyzer:
             Tuple of (success, message)
         """
         # Reset data
-        self.clear_history()
+        self.angles_data = []
+        self.detected_joints.clear()
+        self.previous_landmarks = None
         
         # Update skeleton renderer configuration
         self.skeleton_renderer.config.exercise_type = exercise_type
@@ -561,35 +611,76 @@ class PoseAnalyzer:
         if image is None:
             return False, f"Error: Unable to read image file {image_path}"
         
-        # Process image using legacy API
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        with self.configure_mediapipe(exercise_type) as pose:
-            results = pose.process(image_rgb)
+        # Process image
+        if self.use_tasks_api:
+            # Use Tasks API
+            with self.configure_tasks_api(mode='IMAGE', exercise_type=exercise_type) as pose_landmarker:
+                # Convert to RGB and create MediaPipe Image
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                image_height, image_width = rgb_image.shape[:2]
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image, width=image_width, height=image_height)
+                
+                # Process the image
+                results = pose_landmarker.detect(mp_image)
+                
+                if hasattr(results, 'pose_landmarks') and results.pose_landmarks:
+                    # Draw landmarks if output is required
+                    if output_path:
+                        # Calculate joint angles
+                        angles = self.calculate_angles_tasks(results, joints_to_process)
+                        
+                        # Use skeleton renderer for visualization
+                        annotated_image = self.skeleton_renderer.render(
+                            image,
+                            results.pose_landmarks.landmark,
+                            angles
+                        )
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        cv2.imwrite(output_path, annotated_image)
+                    
+                    # Calculate joint angles
+                    angles = self.calculate_angles_tasks(results, joints_to_process)
+                    self.angles_data.append(angles)
+                    self.detected_joints.update(angles.keys())
+                    
+                    return True, f"Successfully processed image"
+                else:
+                    return False, "No pose landmarks detected in the image"
+        else:
+            # Use legacy API
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
-            if results.pose_landmarks:
-                # Draw landmarks if output is required
-                if output_path:
+            with self.configure_mediapipe(exercise_type) as pose:
+                results = pose.process(image_rgb)
+                
+                if results.pose_landmarks:
+                    # Draw landmarks if output is required
+                    if output_path:
+                        # Calculate joint angles
+                        angles = self.calculate_angles(results, joints_to_process)
+                        
+                        # Use skeleton renderer for visualization
+                        annotated_image = self.skeleton_renderer.render(
+                            image,
+                            results.pose_landmarks.landmark,
+                            angles
+                        )
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        cv2.imwrite(output_path, annotated_image)
+                    
                     # Calculate joint angles
                     angles = self.calculate_angles(results, joints_to_process)
+                    self.angles_data.append(angles)
+                    self.detected_joints.update(angles.keys())
                     
-                    # Use skeleton renderer for visualization
-                    annotated_image = self.skeleton_renderer.render(
-                        image,
-                        results.pose_landmarks.landmark,
-                        angles
-                    )
-                    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    cv2.imwrite(output_path, annotated_image)
-                
-                # Calculate joint angles
-                angles = self.calculate_angles(results, joints_to_process)
-                self.angles_data.append(angles)
-                self.detected_joints.update(angles.keys())
-                
-                return True, f"Successfully processed image"
-            else:
-                return False, "No pose landmarks detected in the image"
+                    # Save annotated image if output path provided
+                    if output_path:
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        cv2.imwrite(output_path, image)
+                    
+                    return True, f"Successfully processed image"
+                else:
+                    return False, "No pose landmarks detected in the image"
     
     def process_live_video(self, camera_id: int = 0, callback: Callable = None, 
                           joints_to_process: List[str] = None, display: bool = True,
@@ -605,7 +696,9 @@ class PoseAnalyzer:
             exercise_type: Type of exercise for model complexity adjustment
         """
         # Reset data
-        self.clear_history()
+        self.angles_data = []
+        self.detected_joints.clear()
+        self.previous_landmarks = None
         
         # Update skeleton renderer configuration
         self.skeleton_renderer.config.exercise_type = exercise_type
@@ -629,77 +722,133 @@ class PoseAnalyzer:
         frame_count = 0
         
         try:
-            # Use legacy MediaPipe API
-            with self.configure_mediapipe(exercise_type) as pose:
-                while cap.isOpened():
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    
-                    frame_count += 1
-                    if frame_count % self.config['process_every_n_frames'] != 0:
-                        continue
-                    
-                    # Process the frame
-                    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    image.flags.writeable = False
-                    results = pose.process(image)
-                    image.flags.writeable = True
-                    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                    
-                    timestamp_ms = int(frame_count * (1000 / fps))
+            if self.use_tasks_api:
+                # Use MediaPipe Tasks API with LIVE_STREAM mode
+                def result_processor(result, output_image, timestamp_ms):
+                    nonlocal frame_count
                     
                     # Apply smart caching for pose stability
-                    if results.pose_landmarks:
-                        landmark_visibility = [lm.visibility for lm in results.pose_landmarks.landmark]
-                        avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
-                        
-                        # Update landmark history regardless of visibility
-                        self._update_landmark_history(results.pose_landmarks, {})
-                        
-                        # Keep backward compatibility with previous_landmarks
-                        if avg_visibility >= self.config['confidence_threshold']:
-                            self.previous_landmarks = results.pose_landmarks
+                    if hasattr(result, 'pose_landmarks') and result.pose_landmarks:
+                        # Implementation depends on Tasks API result format
+                        # This is a placeholder for the smart caching logic
+                        pass
                     
-                    # Track current mode for cross-mode consistency
-                    if hasattr(results, 'current_mode'):
-                        # Handle mode transition
-                        if self.current_mode != results.current_mode:
-                            # We're transitioning modes, keep using history more heavily
-                            old_decay_rate = self.config['confidence_decay_rate']
-                            self.config['confidence_decay_rate'] = min(0.95, old_decay_rate * 1.2)
-                            
-                            # Restore normal decay rate after a few frames
-                            def restore_decay_rate():
-                                self.config['confidence_decay_rate'] = old_decay_rate
-                            # (In a real implementation, you'd need a timer or frame counter to restore)
-                            
-                        self.current_mode = results.current_mode
-                    # Add handling for direct mode change from MovementAnalyzer
-                    elif hasattr(self, 'current_mode') and self.current_mode is not None:
-                        # This case handles mode changes set directly by MovementAnalyzer
-                        pass  # The current_mode is already set, nothing more to do
-                    
-                    # Draw pose landmarks if display is enabled
-                    if display:
+                    if hasattr(result, 'pose_landmarks') and result.pose_landmarks:
                         # Calculate joint angles
-                        angles = self.calculate_angles(results, joints_to_process)
+                        angles = self.calculate_angles_tasks(result, joints_to_process)
+                        self.angles_data.append(angles)
+                        self.detected_joints.update(angles.keys())
                         
-                        # Use skeleton renderer for visualization
-                        annotated_image = self.skeleton_renderer.render(
-                            image,
-                            results.pose_landmarks.landmark,
-                            angles
-                        )
-                        cv2.imshow('MediaPipe Pose', annotated_image)
+                        # Call user callback if provided
+                        if callback:
+                            callback(angles, timestamp_ms)
                     
-                    # Call user callback if provided
-                    if callback:
-                        callback(angles, timestamp_ms)
-                    
-                    # Break on ESC key
-                    if cv2.waitKey(5) & 0xFF == 27:
-                        break
+                    frame_count += 1
+                
+                with self.configure_tasks_api(mode='LIVE_STREAM', exercise_type=exercise_type) as pose_landmarker:
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        
+                        if frame_count % self.config['process_every_n_frames'] != 0:
+                            frame_count += 1
+                            continue
+                        
+                        # Convert to RGB and create MediaPipe Image
+                        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        image_height, image_width = rgb_image.shape[:2]
+                        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image, width=image_width, height=image_height)
+                        
+                        # Calculate timestamp
+                        timestamp_ms = int(frame_count * (1000 / fps))
+                        
+                        # Process the frame asynchronously
+                        pose_landmarker.detect_async(mp_image, timestamp_ms)
+                        
+                        # Display the frame with landmarks if requested
+                        if display:
+                            if hasattr(pose_landmarker, 'result') and pose_landmarker.result:
+                                annotated_image = draw_landmarks_on_image(frame, pose_landmarker.result)
+                                cv2.imshow('MediaPipe Pose', annotated_image)
+                            else:
+                                cv2.imshow('MediaPipe Pose', frame)
+                        
+                        # Break on ESC key
+                        if cv2.waitKey(5) & 0xFF == 27:
+                            break
+            else:
+                # Use legacy MediaPipe API
+                with self.configure_mediapipe(exercise_type) as pose:
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        
+                        frame_count += 1
+                        if frame_count % self.config['process_every_n_frames'] != 0:
+                            continue
+                        
+                        # Process the frame
+                        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        image.flags.writeable = False
+                        results = pose.process(image)
+                        image.flags.writeable = True
+                        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        
+                        timestamp_ms = int(frame_count * (1000 / fps))
+                        
+                        # Apply smart caching for pose stability
+                        if results.pose_landmarks:
+                            landmark_visibility = [lm.visibility for lm in results.pose_landmarks.landmark]
+                            avg_visibility = sum(landmark_visibility) / len(landmark_visibility)
+                            
+                            # Update landmark history regardless of visibility
+                            self._update_landmark_history(results.pose_landmarks, {})
+                            
+                            # Keep backward compatibility with previous_landmarks
+                            if avg_visibility >= self.config['confidence_threshold']:
+                                self.previous_landmarks = results.pose_landmarks
+                        
+                        # Track current mode for cross-mode consistency
+                        if hasattr(results, 'current_mode'):
+                            # Handle mode transition
+                            if self.current_mode != results.current_mode:
+                                # We're transitioning modes, keep using history more heavily
+                                old_decay_rate = self.config['confidence_decay_rate']
+                                self.config['confidence_decay_rate'] = min(0.95, old_decay_rate * 1.2)
+                                
+                                # Restore normal decay rate after a few frames
+                                def restore_decay_rate():
+                                    self.config['confidence_decay_rate'] = old_decay_rate
+                                # (In a real implementation, you'd need a timer or frame counter to restore)
+                                
+                            self.current_mode = results.current_mode
+                        # Add handling for direct mode change from MovementAnalyzer
+                        elif hasattr(self, 'current_mode') and self.current_mode is not None:
+                            # This case handles mode changes set directly by MovementAnalyzer
+                            pass  # The current_mode is already set, nothing more to do
+                        
+                        # Draw pose landmarks if display is enabled
+                        if display:
+                            # Calculate joint angles
+                            angles = self.calculate_angles(results, joints_to_process)
+                            
+                            # Use skeleton renderer for visualization
+                            annotated_image = self.skeleton_renderer.render(
+                                image,
+                                results.pose_landmarks.landmark,
+                                angles
+                            )
+                            cv2.imshow('MediaPipe Pose', annotated_image)
+                        
+                        # Call user callback if provided
+                        if callback:
+                            callback(angles, timestamp_ms)
+                        
+                        # Break on ESC key
+                        if cv2.waitKey(5) & 0xFF == 27:
+                            break
         
         finally:
             cap.release()
@@ -720,6 +869,13 @@ class PoseAnalyzer:
                 # Return empty angles dictionary with default values to avoid errors
                 # This ensures detected_joints gets populated even with low confidence data
                 return {joint: {'angle': None, 'confidence': 0.1, 'raw_confidence': 0.1} for joint in joints_to_process}
+                
+            # Apply stabilization to landmarks - make a defensive copy
+            try:
+                stabilized_landmarks = self._get_stabilized_landmarks(landmarks)
+                landmarks = stabilized_landmarks if stabilized_landmarks is not None else landmarks
+            except Exception as e:
+                logging.warning(f"Error stabilizing landmarks: {e}. Using original landmarks.")
             
             for joint in joints_to_process:
                 if joint in self.joint_mappings:

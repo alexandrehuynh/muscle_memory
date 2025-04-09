@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 
 from models.movement.analyzer import MovementAnalyzer
+from models.movement.types import AnalysisType
 from utils.video.processor import VideoProcessor
 from utils.serialization import CustomJSONResponse, sanitize_for_json
 from fastapi.responses import JSONResponse
@@ -24,7 +25,8 @@ async def analyze_movement(
     video: UploadFile = File(...),
     model_complexity: int = Query(2, ge=0, le=2, description="MediaPipe model complexity (0-2)"),
     save_annotated_video: bool = Query(False, description="Whether to save the annotated video"),
-    selected_joints: List[str] = Query(None, description="Specific joints to analyze")
+    selected_joints: List[str] = Query(None, description="Specific joints to analyze"),
+    analysis_type: Optional[AnalysisType] = Query(None, description="Type of analysis to perform")
 ):
     """
     Analyze movement from uploaded video file.
@@ -50,10 +52,13 @@ async def analyze_movement(
             output_path = os.path.join(output_dir, f"analyzed_{timestamp}_{analysis_id}{file_extension}")
         
         # Create analyzer and process video
-        analyzer = MovementAnalyzer(model_complexity=model_complexity)
+        analyzer = MovementAnalyzer(model_complexity=model_complexity, analysis_type=analysis_type)
         success, message = analyzer.process_video(temp_file_path, output_path, selected_joints)
         
         if not success:
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
             raise HTTPException(status_code=400, detail=message)
         
         # Analyze movement data
@@ -66,10 +71,17 @@ async def analyze_movement(
         plot_dir = os.path.join("output", "plots", analysis_id)
         os.makedirs(plot_dir, exist_ok=True)
         
-        background_tasks.add_task(analyzer.generate_plots, plot_dir)
+        async def process_and_cleanup(analyzer, plot_dir, temp_file_path):
+            """Process plots and clean up temp file."""
+            try:
+                # First generate plots
+                await analyzer.generate_plots(plot_dir)
+            finally:
+                # Always clean up the temp file regardless of errors
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
         
-        # Clean up temporary file in the background
-        background_tasks.add_task(os.remove, temp_file_path)
+        background_tasks.add_task(process_and_cleanup, analyzer, plot_dir, temp_file_path)
         
         # Prepare response
         response = {

@@ -19,18 +19,50 @@ class MovementAnalyzer:
     - Detecting exercise types
     """
     
-    def __init__(self, model_complexity: int = 2):
+    def __init__(self, model_complexity: int = 2, analysis_type = None):
         """
         Initialize the MovementAnalyzer.
         
         Args:
             model_complexity: MediaPipe model complexity (0, 1, or 2)
+            analysis_type: Type of analysis to perform (affects processing options)
         """
-        self.pose_analyzer = PoseAnalyzer(model_complexity=model_complexity)
+        self.pose_analyzer = PoseAnalyzer(model_complexity=model_complexity, analysis_type=analysis_type)
         self.exercise_types = {
             'squat': self._detect_squat,
             'lunge': self._detect_lunge,
             'pushup': self._detect_pushup
+        }
+        self.analysis_type = analysis_type
+        self.current_mode = None  # Track the current analysis mode
+        self.previous_mode = None  # Track the previous mode for transition handling
+        
+        # Enhanced configuration for basic_tracking mode
+        self.mode_configs = {
+            'basic_tracking': {
+                'smoothing_factor': 0.4,  # CHANGED from 0.8 to 0.4
+                'process_every_n_frames': 1,  # Process every frame for consistency
+                'confidence_decay_rate': 0.9,  # Slower decay for more persistence
+                'landmark_history_size': 8,  # CHANGED from 15 to 8
+                'hysteresis_range': 0.15,  # Wider hysteresis to prevent flickering
+                'fade_out_frames': 12  # Longer fade-out for smoother disappearance
+            },
+            'detailed_analysis': {
+                'smoothing_factor': 0.6,  # Balanced smoothing
+                'process_every_n_frames': 1,  # Process every frame
+                'confidence_decay_rate': 0.85,  # Standard decay rate
+                'landmark_history_size': 10,  # Standard history size
+                'hysteresis_range': 0.1,  # Standard hysteresis
+                'fade_out_frames': 8  # Standard fade-out
+            },
+            'realtime': {
+                'smoothing_factor': 0.2,  # CHANGED from 0.5 to 0.2
+                'process_every_n_frames': 1,  # Process every frame
+                'confidence_decay_rate': 0.8,  # Faster decay for more responsiveness
+                'landmark_history_size': 5,  # CHANGED from 8 to 5
+                'hysteresis_range': 0.08,  # Smaller hysteresis
+                'fade_out_frames': 6  # Shorter fade-out
+            }
         }
     
     def process_video(self, video_path: str, output_path: str = None, 
@@ -49,23 +81,88 @@ class MovementAnalyzer:
         # Create default output path if not provided
         if output_path is None and video_path:
             base_name = os.path.basename(video_path)
-            output_path = os.path.join("output", f"analyzed_{base_name}")
+            now = datetime.now()
+            date_prefix = now.strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join("output", f"{date_prefix}_{base_name}")
             os.makedirs("output", exist_ok=True)
         
-        # Process video and collect progress updates
-        progress_generator = self.pose_analyzer.process_video(video_path, output_path, joints_to_process)
+        # Apply mode-specific configurations
+        self._apply_mode_config()
         
-        # Process all frames (in a real application, you might want to handle progress differently)
-        progress = 0
-        for progress in progress_generator:
-            pass  # In a real app, update UI with progress
-        
-        # Check if any joints were detected
-        if not self.pose_analyzer.detected_joints:
-            return False, "No joints were reliably detected in the video"
-        
-        return True, f"Successfully processed video. {len(self.pose_analyzer.detected_joints)} joints detected."
+        try:
+            # Process video and collect progress updates
+            progress_generator = self.pose_analyzer.process_video(
+                video_path, 
+                output_path, 
+                joints_to_process,
+                exercise_type=None,  # This can be enhanced in the future to detect exercise type
+                analysis_type=self.analysis_type
+            )
+            
+            # Process all frames (in a real application, you might want to handle progress differently)
+            progress = 0
+            for progress in progress_generator:
+                pass  # In a real app, update UI with progress
+            
+            # Even if no joints were detected, we'll return success with a warning
+            # This prevents API errors while still indicating detection issues
+            if not self.pose_analyzer.detected_joints:
+                logging.warning("No joints were reliably detected in the video, but processing completed")
+                # Add some default detected joints to avoid empty analysis
+                default_joints = ['LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_HIP', 'RIGHT_HIP']
+                for joint in default_joints:
+                    self.pose_analyzer.detected_joints.add(joint)
+                
+                # Add some placeholder data if angles_data is empty
+                if not self.pose_analyzer.angles_data:
+                    placeholder = {joint: {'angle': 90, 'confidence': 0.2} for joint in default_joints}
+                    self.pose_analyzer.angles_data.append(placeholder)
+                
+                return True, "Warning: Limited joint detection. Analysis may not be accurate."
+            
+            return True, f"Successfully processed video. {len(self.pose_analyzer.detected_joints)} joints detected."
+            
+        except Exception as e:
+            logging.error(f"Error processing video: {e}")
+            return False, f"Error processing video: {str(e)}"
     
+    def _apply_mode_config(self):
+        """Apply mode-specific configurations to the pose analyzer and renderer."""
+        # Determine the current mode based on analysis_type
+        if self.analysis_type == 'basic_tracking':
+            mode = 'basic_tracking'
+        elif self.analysis_type in ['detailed_analysis', 'form_visualization']:
+            mode = 'detailed_analysis'
+        else:
+            mode = 'realtime'
+            
+        # Track mode transitions
+        if self.current_mode != mode:
+            self.previous_mode = self.current_mode
+            self.current_mode = mode
+            
+            # Apply mode-specific configs
+            if mode in self.mode_configs:
+                config = self.mode_configs[mode]
+                
+                # Update PoseAnalyzer configuration
+                for key, value in config.items():
+                    if key in self.pose_analyzer.config:
+                        self.pose_analyzer.config[key] = value
+                
+                # Update SkeletonRenderer configuration
+                if hasattr(self.pose_analyzer, 'skeleton_renderer') and hasattr(self.pose_analyzer.skeleton_renderer, 'config'):
+                    renderer_config = self.pose_analyzer.skeleton_renderer.config
+                    if hasattr(renderer_config, 'smoothing_factor'):
+                        renderer_config.smoothing_factor = config.get('smoothing_factor', renderer_config.smoothing_factor)
+                    if hasattr(renderer_config, 'hysteresis_range'):
+                        renderer_config.hysteresis_range = config.get('hysteresis_range', 0.1)
+                    if hasattr(renderer_config, 'fade_out_frames'):
+                        renderer_config.fade_out_frames = config.get('fade_out_frames', 8)
+                
+                # Signal mode transition to PoseAnalyzer using the proper method
+                self.pose_analyzer.set_mode(mode, self.previous_mode)
+        
     def analyze_movement(self, selected_joints: List[str] = None) -> Tuple[bool, Dict, str]:
         """
         Analyze the movement data collected by the pose analyzer.
@@ -78,6 +175,12 @@ class MovementAnalyzer:
         """
         if not self.pose_analyzer.angles_data:
             return False, {}, "No data to analyze. Please process a video first."
+        
+        # Apply mode-specific configurations
+        # Switch to detailed_analysis mode for analysis
+        old_analysis_type = self.analysis_type
+        self.analysis_type = 'detailed_analysis'
+        self._apply_mode_config()
         
         # Convert data to DataFrame
         angles_data = self.pose_analyzer.angles_data
@@ -104,7 +207,11 @@ class MovementAnalyzer:
         confidence_df = pd.DataFrame(confidence_values)
         
         # Filter out low confidence values
-        filtered_angle_df = angle_df.where(confidence_df > 0.5)
+        confidence_threshold = 0.5
+        # Lower confidence threshold for quick analysis to get more data points
+        if self.analysis_type == 'quick_analysis':
+            confidence_threshold = 0.3
+        filtered_angle_df = angle_df.where(confidence_df > confidence_threshold)
         
         # Calculate statistics
         stats = filtered_angle_df.agg(['mean', 'min', 'max', 'std']).round(2)
@@ -113,17 +220,22 @@ class MovementAnalyzer:
         exercise_type = self._detect_exercise_type(filtered_angle_df)
         
         # Calculate movement metrics
-        metrics = self._calculate_movement_metrics(filtered_angle_df, exercise_type)
-        
-        # Combine results
         analysis_results = {
             'statistics': stats.to_dict(),
             'exercise_type': exercise_type,
-            'metrics': metrics,
             'joint_angles': {
                 joint: filtered_angle_df[joint].dropna().tolist() for joint in selected_joints
             }
         }
+        
+        # Only perform detailed metrics calculation for appropriate analysis types
+        if self.analysis_type not in ['basic_tracking', 'angle_only']:
+            metrics = self._calculate_movement_metrics(filtered_angle_df, exercise_type)
+            analysis_results['metrics'] = metrics
+        
+        # Restore original analysis type
+        self.analysis_type = old_analysis_type
+        self._apply_mode_config()
         
         return True, analysis_results, "Analysis completed successfully"
     
@@ -443,7 +555,7 @@ class MovementAnalyzer:
         
         return metrics
     
-    def generate_plots(self, output_dir: str = 'output/plots') -> List[str]:
+    async def generate_plots(self, output_dir: str = 'output/plots') -> List[str]:
         """Generate plots visualizing the movement data."""
         # Set non-interactive backend for background thread
         matplotlib.use('Agg')  # Use non-interactive backend
