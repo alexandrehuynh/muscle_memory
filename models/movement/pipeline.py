@@ -85,7 +85,7 @@ class MovementPipeline:
         viz_config = VisualizationConfig(
             mode=viz_mode,
             show_angles=self.config.show_angles,
-            show_reference_lines=self.config.show_reference_lines
+            show_reference_lines=True
         )
         self.visualizer = SkeletonVisualizer(viz_config)
         
