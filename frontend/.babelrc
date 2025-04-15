@@ -1,0 +1,6 @@
+{
+  "presets": ["next/babel", "@babel/preset-flow"],
+  "ignore": [
+    "./node_modules/react-devtools-core/**" // Ignore react-devtools-core
+  ]
+} 
